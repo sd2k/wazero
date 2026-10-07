@@ -321,6 +321,10 @@ func (c *callEngine) callWithStack(ctx context.Context, paramResultStack []uint6
 			for _, lsn := range listeners {
 				lsn.lsn.Abort(ctx, m, lsn.def, err)
 			}
+			// A trap or proc_exit unwinds by panicking, so FailIfClosed below
+			// isn't reached. If the module was closed asynchronously while
+			// it ran, close the resources that was deferred to it.
+			_ = c.parent.module.CloseDeferredResources(ctx)
 		} else {
 			if err != wasmruntime.ErrRuntimeStackOverflow { // Stackoverflow case shouldn't be panic (to avoid extreme stack unwinding).
 				err = c.parent.module.FailIfClosed()
