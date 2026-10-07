@@ -67,6 +67,10 @@ func TestEngine_CompileModule(t *testing.T) {
 
 			err := e.CompileModule(ctx, okModule, nil, false)
 			require.NoError(t, err)
+			// The engine has the native code, so it releases the bodies.
+			for i := range okModule.CodeSection {
+				require.Nil(t, okModule.CodeSection[i].Body, i)
+			}
 
 			// Compiling same module shouldn't be compiled again, but instead should be cached.
 			err = e.CompileModule(ctx, okModule, nil, false)
