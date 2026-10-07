@@ -71,6 +71,10 @@ func mmapCodeSegment(size int) ([]byte, error) {
 	return unix.Mmap(-1, 0, size, prot, flag)
 }
 
+// MapsCodeSegmentsFromFiles reports whether MapCodeSegmentFromFile is
+// implemented on this platform.
+const MapsCodeSegmentsFromFiles = true
+
 // MapCodeSegmentFromFile maps size bytes of f, starting at offset, as
 // read-only executable memory. offset must be a multiple of the page size.
 // Unlike MmapCodeSegment followed by a copy, pages are read from the file on

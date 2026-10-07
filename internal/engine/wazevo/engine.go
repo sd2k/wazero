@@ -142,6 +142,15 @@ func NewEngine(ctx context.Context, _ api.CoreFeatures, fc filecache.Cache) wasm
 	return e
 }
 
+// reloadAfterCacheMiss reports whether CompileModule should load a module it
+// just compiled back from the file cache: only where a cache hit maps the code
+// instead of copying it, and not while verifying deterministic compilation,
+// which compiles the same module repeatedly.
+func (e *engine) reloadAfterCacheMiss(module *wasm.Module) bool {
+	return e.fileCache != nil && !module.IsHostModule &&
+		platform.MapsCodeSegmentsFromFiles && !wazevoapi.DeterministicCompilationVerifierEnabled
+}
+
 // CompileModule implements wasm.Engine.
 func (e *engine) CompileModule(ctx context.Context, module *wasm.Module, listeners []experimental.FunctionListener, ensureTermination bool) (err error) {
 	if wazevoapi.PerfMapEnabled {
@@ -162,7 +171,24 @@ func (e *engine) CompileModule(ctx context.Context, module *wasm.Module, listene
 	if err != nil {
 		return err
 	}
-	if cm, err = e.addCompiledModule(module, cm); err != nil {
+	if e.reloadAfterCacheMiss(module) {
+		// Store the entry, then load it back like a cache hit, so the code is
+		// mapped from the cache file (see readExecutable) instead of staying
+		// in anonymous memory for the life of the module.
+		if err = e.addCompiledModuleToCache(module, cm); err != nil {
+			return err
+		}
+		if _, ok, err := e.getCompiledModule(module, listeners, ensureTermination); ok {
+			// Nothing has seen the compiled copy, so release it now rather
+			// than when its finalizer runs. The finalizer is then a no-op.
+			executablesFinalizer(cm.executables)
+			return nil
+		} else if err != nil {
+			return err
+		}
+		// The entry didn't load back, so use the compiled copy after all.
+		cm = e.addCompiledModuleToMemory(module, cm)
+	} else if cm, err = e.addCompiledModule(module, cm); err != nil {
 		return err
 	}
 

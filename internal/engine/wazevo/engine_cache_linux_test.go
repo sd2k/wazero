@@ -1,15 +1,19 @@
 package wazevo
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unsafe"
 
+	"github.com/tetratelabs/wazero/internal/filecache"
 	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/testing/require"
+	"github.com/tetratelabs/wazero/internal/wasm"
 )
 
 // On Linux, a file cache hit maps the code from the cache file rather than
@@ -60,6 +64,27 @@ func requireExecutableMapping(t *testing.T, f *os.File) {
 		t.Skipf("cannot map %s as code: %v", f.Name(), err)
 	}
 	require.NoError(t, platform.MunmapCodeSegment(code))
+}
+
+// On Linux, a module compiled on a file cache miss ends up mapped from the
+// entry it wrote, as if it had been a hit.
+func TestEngine_CompileModule_mapsCodeAfterCacheMiss(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	requireExecutableMapping(t, cacheFile(t, make([]byte, executableAlignment)))
+	e := NewEngine(ctx, 0, filecache.New(dir)).(*engine)
+	module := &wasm.Module{
+		TypeSection:     []wasm.FunctionType{{}},
+		FunctionSection: []wasm.Index{0},
+		CodeSection:     []wasm.Code{{Body: []byte{wasm.OpcodeEnd}}},
+		ID:              wasm.ModuleID{1},
+	}
+	require.NoError(t, e.CompileModule(ctx, module, nil, false))
+
+	cm, ok := e.getCompiledModuleFromMemory(module, false)
+	require.True(t, ok)
+	path := mappingPath(t, uintptr(unsafe.Pointer(&cm.executable[0])))
+	require.True(t, strings.HasPrefix(path, dir+string(filepath.Separator)), path)
 }
 
 // mappingPath returns the file backing the mapping that contains addr, from
