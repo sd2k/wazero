@@ -334,11 +334,18 @@ func deserializeCompiledModule(wazeroVersion string, rc io.ReadCloser) (cm *comp
 		if _, err = reader.Discard(padding); err != nil {
 			return nil, false, fmt.Errorf("compilationcache: error reading executable padding: %v", err)
 		}
-		executable, err := readExecutable(rc, reader, int64(offset+padding), executableLen)
-		if err != nil {
+		var executable []byte
+		if executable, err = readExecutable(rc, reader, int64(offset+padding), executableLen); err != nil {
 			return nil, false, err
 		}
 		cm.executable = executable
+		// cm is discarded if the rest of the entry fails to decode or is
+		// stale, so release the code with it.
+		defer func() {
+			if err != nil || staleCache {
+				_ = platform.MunmapCodeSegment(executable)
+			}
+		}()
 	}
 
 	if _, err := io.ReadFull(reader, eightBytes[:1]); err != nil {
