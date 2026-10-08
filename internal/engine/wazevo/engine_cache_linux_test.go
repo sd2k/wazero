@@ -33,6 +33,25 @@ func TestDeserializeCompiledModule_mapsCodeFromFile(t *testing.T) {
 	require.Equal(t, f.Name(), mappingPath(t, uintptr(unsafe.Pointer(&cm.executable[0]))))
 }
 
+// The mapped code is released when the rest of the entry fails to decode.
+func TestDeserializeCompiledModule_unmapsCodeOnError(t *testing.T) {
+	entry, err := io.ReadAll(serializeCompiledModule(testVersion, &compiledModule{
+		executables:     &executables{executable: []byte{1, 2, 3, 4, 5}},
+		functionOffsets: []int{0},
+	}))
+	require.NoError(t, err)
+	// Drop everything after the code's checksum.
+	f := cacheFile(t, entry[:executableAlignment+5+4])
+	requireExecutableMapping(t, f)
+
+	_, _, err = deserializeCompiledModule(testVersion, f)
+	require.EqualError(t, err, "compilationcache: error reading source map presence: EOF")
+
+	maps, err := os.ReadFile("/proc/self/maps")
+	require.NoError(t, err)
+	require.False(t, strings.Contains(string(maps), f.Name()))
+}
+
 // requireExecutableMapping skips the test if f can't be mapped executable,
 // for example because it is on a noexec mount, as /tmp is in Docker.
 func requireExecutableMapping(t *testing.T, f *os.File) {
