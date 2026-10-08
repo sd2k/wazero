@@ -153,9 +153,9 @@ func (m *freeRecordingMemory) Free() { m.freed = true }
 type cancelKey struct{}
 
 // testCloseAfterContextDoneReleasesResources ensures a module closed by its
-// context being done releases its resources even when the guest then exits
-// or traps before reaching a termination check, which would otherwise have
-// released them.
+// context being done releases its resources even when the guest then exits,
+// traps or overflows the stack before reaching a termination check, which
+// would otherwise have released them.
 func testCloseAfterContextDoneReleasesResources(t *testing.T, r wazero.Runtime) {
 	wasi_snapshot_preview1.MustInstantiate(testCtx, r)
 	_, err := r.NewHostModuleBuilder("host").NewFunctionBuilder().
@@ -170,7 +170,7 @@ func testCloseAfterContextDoneReleasesResources(t *testing.T, r wazero.Runtime) 
 	compiled, err := r.CompileModule(testCtx, closeAfterCancelWasm)
 	require.NoError(t, err)
 
-	for _, fn := range []string{"exit", "trap"} {
+	for _, fn := range []string{"exit", "trap", "overflow"} {
 		t.Run(fn, func(t *testing.T) {
 			var mem *freeRecordingMemory
 			ctx, cancel := context.WithCancel(testCtx)
