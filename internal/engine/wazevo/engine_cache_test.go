@@ -10,6 +10,7 @@ import (
 	"testing"
 	"testing/iotest"
 
+	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/testing/require"
 	"github.com/tetratelabs/wazero/internal/u32"
 	"github.com/tetratelabs/wazero/internal/u64"
@@ -119,6 +120,9 @@ func TestDeserializeCompiledModule(t *testing.T) {
 		expCompiledModule     *compiledModule
 		expStaleCache         bool
 		expErr                string
+		// expErrMapped, if set, replaces expErr when the code is mapped from
+		// a file, which doesn't verify the checksum.
+		expErrMapped string
 	}{
 		{
 			name:   "invalid header",
@@ -274,6 +278,8 @@ func TestDeserializeCompiledModule(t *testing.T) {
 			},
 			expStaleCache: false,
 			expErr:        "compilationcache: checksum mismatch (expected 1397854123, got 67305985)",
+			// Without the checksum check, decoding carries on past the code.
+			expErrMapped: "compilationcache: error reading source map presence: EOF",
 		},
 		{
 			name: "missing crc",
@@ -331,8 +337,10 @@ func TestDeserializeCompiledModule(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			check := func(t *testing.T, cm *compiledModule, staleCache bool, err error) {
-				if tc.expErr != "" {
+			check := func(t *testing.T, cm *compiledModule, staleCache bool, err error, mapped bool) {
+				if mapped && tc.expErrMapped != "" {
+					require.EqualError(t, err, tc.expErrMapped)
+				} else if tc.expErr != "" {
 					require.EqualError(t, err, tc.expErr)
 				} else {
 					require.NoError(t, err)
@@ -344,16 +352,30 @@ func TestDeserializeCompiledModule(t *testing.T) {
 				r := r
 				t.Run(r.name, func(t *testing.T) {
 					cm, staleCache, err := deserializeCompiledModule(testVersion, io.NopCloser(r.wrap(bytes.NewReader(tc.in))))
-					check(t, cm, staleCache, err)
+					check(t, cm, staleCache, err, false)
 				})
 			}
 			// A file, which on Linux maps the code instead of copying it.
 			t.Run("file", func(t *testing.T) {
-				cm, staleCache, err := deserializeCompiledModule(testVersion, cacheFile(t, tc.in))
-				check(t, cm, staleCache, err)
+				f := cacheFile(t, tc.in)
+				mapped := canMapCode(t, f)
+				cm, staleCache, err := deserializeCompiledModule(testVersion, f)
+				check(t, cm, staleCache, err, mapped)
 			})
 		})
 	}
+}
+
+// canMapCode reports whether f's code would be mapped rather than copied:
+// on Linux, and unless f's filesystem forbids executable mappings.
+func canMapCode(t *testing.T, f *os.File) bool {
+	t.Helper()
+	code, err := platform.MapCodeSegmentFromFile(f, 0, 1)
+	if err != nil {
+		return false
+	}
+	require.NoError(t, platform.MunmapCodeSegment(code))
+	return true
 }
 
 // cacheFile writes content to a file and opens it, as filecache.Get does.
