@@ -222,55 +222,80 @@ func serializeCompiledModule(wazeroVersion string, cm *compiledModule) io.Reader
 }
 
 // readExecutable reads the executableLen bytes of native code at offset in
-// the cache entry, followed by their checksum, from reader. When the entry
-// is a file, it maps the code from the file instead of copying it, and reads
-// the code through reader only to check the checksum. Reading doesn't map the
-// pages into this process, so the code only becomes resident as it runs.
+// the cache entry, followed by their checksum, from reader.
+//
+// When the entry is a file, it maps the code from the file instead of copying
+// it, and doesn't read the code or its checksum at all: verifying the
+// checksum would read every page, bringing the whole executable into the page
+// cache although only the code that runs needs to be resident. Like the
+// executables and shared libraries the kernel maps, mapped code is trusted
+// as it is on disk. Entries are written to a temporary file and renamed into
+// place, so the realistic failure is a truncated entry, and the length check
+// catches that.
 func readExecutable(rc io.ReadCloser, reader *bufio.Reader, offset int64, executableLen uint64) (_ []byte, err error) {
-	var code []byte
-	mapped := false
 	if f, ok := rc.(*os.File); ok {
-		code, err = platform.MapCodeSegmentFromFile(f, offset, int(executableLen))
-		mapped = err == nil
-	}
-	if !mapped {
-		if code, err = platform.MmapCodeSegment(int(executableLen)); err != nil {
-			return nil, fmt.Errorf("compilationcache: error mmapping executable (len=%d): %v", executableLen, err)
+		if code, err := platform.MapCodeSegmentFromFile(f, offset, int(executableLen)); err == nil {
+			if err = skipMappedExecutable(f, reader, offset, executableLen); err != nil {
+				_ = platform.MunmapCodeSegment(code)
+				return nil, err
+			}
+			return code, nil
 		}
+	}
+
+	code, err := platform.MmapCodeSegment(int(executableLen))
+	if err != nil {
+		return nil, fmt.Errorf("compilationcache: error mmapping executable (len=%d): %v", executableLen, err)
 	}
 	defer func() {
 		if err != nil {
 			_ = platform.MunmapCodeSegment(code)
 		}
 	}()
-
-	var expected uint32
-	if mapped {
-		h := crc32.New(crc)
-		if _, err = io.CopyN(h, reader, int64(executableLen)); err != nil {
-			return nil, fmt.Errorf("compilationcache: error reading executable (len=%d): %v", executableLen, err)
-		}
-		expected = h.Sum32()
-	} else {
-		if _, err = io.ReadFull(reader, code); err != nil {
-			return nil, fmt.Errorf("compilationcache: error reading executable (len=%d): %v", executableLen, err)
-		}
-		expected = crc32.Checksum(code, crc)
+	if _, err = io.ReadFull(reader, code); err != nil {
+		return nil, fmt.Errorf("compilationcache: error reading executable (len=%d): %v", executableLen, err)
 	}
-
+	expected := crc32.Checksum(code, crc)
 	var checksum [4]byte
 	if _, err = io.ReadFull(reader, checksum[:]); err != nil {
 		return nil, fmt.Errorf("compilationcache: could not read checksum: %v", err)
 	} else if got := binary.LittleEndian.Uint32(checksum[:]); expected != got {
 		return nil, fmt.Errorf("compilationcache: checksum mismatch (expected %d, got %d)", expected, got)
 	}
-
-	if !mapped {
-		if err = platform.MprotectCodeSegment(code); err != nil {
-			return nil, err
-		}
+	if err = platform.MprotectCodeSegment(code); err != nil {
+		return nil, err
 	}
 	return code, nil
+}
+
+// skipMappedExecutable moves reader past the mapped code at offset in f and
+// its checksum without reading them, after checking f holds both. It fails
+// as reading them would if f is too short.
+func skipMappedExecutable(f *os.File, reader *bufio.Reader, offset int64, executableLen uint64) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	codeEnd := offset + int64(executableLen)
+	if size := info.Size(); size < codeEnd {
+		return fmt.Errorf("compilationcache: error reading executable (len=%d): %v", executableLen, shortRead(size-offset))
+	} else if size < codeEnd+4 {
+		return fmt.Errorf("compilationcache: could not read checksum: %v", shortRead(size-codeEnd))
+	}
+	if _, err = f.Seek(codeEnd+4, io.SeekStart); err != nil {
+		return err
+	}
+	// Drop whatever reader buffered from before the seek.
+	reader.Reset(f)
+	return nil
+}
+
+// shortRead is the error io.ReadFull returns when only n bytes were left.
+func shortRead(n int64) error {
+	if n <= 0 {
+		return io.EOF
+	}
+	return io.ErrUnexpectedEOF
 }
 
 func deserializeCompiledModule(wazeroVersion string, rc io.ReadCloser) (cm *compiledModule, staleCache bool, err error) {
