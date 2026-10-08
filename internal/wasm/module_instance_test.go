@@ -386,7 +386,7 @@ func TestModuleInstance_CloseModuleOnCanceledOrTimeout(t *testing.T) {
 	})
 }
 
-func TestModuleInstance_CloseDeferredResources(t *testing.T) {
+func TestModuleInstance_closeDeferredResources(t *testing.T) {
 	s := newStore()
 
 	t.Run("Close closes them", func(t *testing.T) {
@@ -416,7 +416,7 @@ func TestModuleInstance_CloseDeferredResources(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_ = m.CloseDeferredResources(testCtx)
+				_ = m.closeDeferredResources(testCtx)
 				_ = m.FailIfClosed()
 			}()
 		}
@@ -429,13 +429,13 @@ func TestModuleInstance_CloseDeferredResources(t *testing.T) {
 	t.Run("nothing to close", func(t *testing.T) {
 		closer := &mockCloser{}
 		open := &ModuleInstance{ModuleName: "test", s: s, CodeCloser: closer}
-		require.NoError(t, open.CloseDeferredResources(testCtx))
+		require.NoError(t, open.closeDeferredResources(testCtx))
 		require.Equal(t, 0, closer.called)
 		require.Zero(t, open.Closed.Load())
 
 		closed := &ModuleInstance{ModuleName: "test", s: s, CodeCloser: closer}
 		require.NoError(t, closed.Close(testCtx))
-		require.NoError(t, closed.CloseDeferredResources(testCtx))
+		require.NoError(t, closed.closeDeferredResources(testCtx))
 		require.Equal(t, 1, closer.called)
 	})
 }
